@@ -3,6 +3,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,58 @@ app.add_middleware(
 )
 
 
+def supabase_request(method, path, payload=None):
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_KEY")
+
+    if not url or not key:
+        raise HTTPException(
+            status_code=500,
+            detail="Supabase configuration is missing"
+        )
+
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{url}/rest/v1/{path}",
+        data=data,
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Prefer": "return=representation"
+        },
+        method=method
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = response.read().decode("utf-8")
+            return json.loads(result) if result else None
+
+    except urllib.error.HTTPError as error:
+        error_body = error.read().decode(
+            "utf-8", errors="replace"
+        )
+        print("Supabase error:", error.code, error_body)
+
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase database request failed"
+        )
+
+    except Exception as error:
+        print("Supabase connection error:", str(error))
+
+        raise HTTPException(
+            status_code=502,
+            detail="Could not connect to Supabase"
+        )
+
+
 @app.get("/")
 def root():
     return {
@@ -30,6 +83,63 @@ def root():
 def health():
     return {
         "status": "healthy"
+    }
+
+
+@app.post("/api/orders")
+def create_order(order: dict):
+    title = str(order.get("title", "")).strip()
+
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail="Order title is required"
+        )
+
+    new_order = {
+        "title": title,
+        "category": str(order.get("category", "")).strip(),
+        "description": str(order.get("description", "")).strip(),
+        "requirements": str(order.get("requirements", "")).strip(),
+        "budget": str(order.get("budget", "")).strip(),
+        "deadline": str(order.get("deadline", "")).strip(),
+        "status": "open"
+    }
+
+    result = supabase_request(
+        "POST",
+        "orders",
+        new_order
+    )
+
+    if not result:
+        raise HTTPException(
+            status_code=502,
+            detail="Order was not saved"
+        )
+
+    return {
+        "success": True,
+        "order": result[0]
+    }
+
+
+@app.get("/api/orders")
+def get_orders():
+    query = urllib.parse.urlencode({
+        "select": "*",
+        "status": "eq.open",
+        "order": "created_at.desc"
+    })
+
+    result = supabase_request(
+        "GET",
+        f"orders?{query}"
+    )
+
+    return {
+        "success": True,
+        "orders": result or []
     }
 
 
